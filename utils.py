@@ -173,6 +173,33 @@ def plot_mmr_vs_alpha(df: pd.DataFrame, save_path: str | None = None):
     return fig
 
 
+def plot_mmr_comparison(df: pd.DataFrame, save_path: str | None = None):
+    """
+    Plot both MMR (cosine relevance) and MMR_raw (judge v2 relevance) against alpha.
+    Expects columns 'MMR' and 'MMR_raw' in the DataFrame.
+    """
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(df["alpha"], df["MMR"], marker="o", color="#7c3aed", label="MMR (cosine rel)")
+    ax.plot(df["alpha"], df["MMR_raw"], marker="s", color="#ea580c", label="MMR_raw (judge v2 rel)")
+
+    best_mmr_idx = df["MMR"].idxmax()
+    best_raw_idx = df["MMR_raw"].idxmax()
+    ax.scatter([df.loc[best_mmr_idx, "alpha"]], [df.loc[best_mmr_idx, "MMR"]],
+               color="#7c3aed", edgecolors="black", zorder=5, s=80)
+    ax.scatter([df.loc[best_raw_idx, "alpha"]], [df.loc[best_raw_idx, "MMR_raw"]],
+               color="#ea580c", edgecolors="black", zorder=5, s=80)
+
+    ax.set_xlabel("alpha")
+    ax.set_ylabel("Cumulative MMR Score")
+    ax.set_title("MMR vs MMR_raw across alpha")
+    ax.grid(alpha=0.3)
+    ax.legend()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
 if __name__ == "__main__":
     # Self-test with synthetic data mimicking your CRUX stdout format
     import numpy as np

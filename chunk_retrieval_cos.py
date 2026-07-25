@@ -7,7 +7,7 @@ import openjij as oj
 import subprocess
 import pandas as pd
 from sentence_transformers import SentenceTransformer
-from utils import parse_crux_output, save_results, plot_all_metrics, plot_chunk_count, plot_mmr_vs_alpha
+from utils import parse_crux_output, save_results, plot_all_metrics, plot_chunk_count, plot_mmr_vs_alpha, plot_mmr_comparison
 
 # ─── Configuration ───────────────────────────────────────────────────────
 
@@ -22,11 +22,16 @@ RUN_FILE_PATH = "qubo_duc04_run.txt"
 QREL_PATH = os.path.join(CRUX_ROOT, "crux-mds-duc04", "qrels", "div_qrels-tau3.txt")
 JUDGE_PATH = os.path.join(CRUX_ROOT, "crux-mds-duc04", "judge", "ratings.Llama-3.1-70B-Instruct.0-1.jsonl")
 CACHE_FILE_PATH = "score_cache.pkl"
+GRADED_QREL_PATH = os.path.join(CRUX_ROOT, "crux-mds-duc04", "qrels", "legacy", "qrels.txt")
+JUDGE_V2_PATH = os.path.join(CRUX_ROOT, "crux-mds-duc04", "judge", "v2", "ratings.Llama-3.3-70B-Instruct.0-1.jsonl")
+MAX_REL_GRADE = 3
 
 K_FINAL = 5
 N_SA_READS = 100
-N_ITERATIONS = 1
-ALPHA_GRID = [round(a, 2) for a in np.linspace(0.75, 1, 10)]
+N_ITERATIONS = 50
+ALPHA_GRID = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.70, 0.8, 0.9]
+# ALPHA_GRID = [0.7,0.725,0.75,0.775,0.8,0.825,0.85,0.875,0.9]
+MMR_LAMBDA = 0.5
 
 # ─── Data Loading ────────────────────────────────────────────────────────
 
@@ -53,6 +58,33 @@ def load_or_create_cache(path):
 def save_cache(cache, path):
     with open(path, "wb") as f:
         pickle.dump(cache, f)
+
+
+def load_graded_qrels(path):
+    qrels = {}
+    if not os.path.exists(path):
+        return qrels
+    with open(path, "r") as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) >= 4:
+                topic_id, _, chunk_id, grade = parts[0], parts[1], parts[2], int(parts[3])
+                qrels.setdefault(topic_id, {})[chunk_id] = grade
+    return qrels
+
+
+def load_judge_v2(path):
+    judge = {}
+    if not os.path.exists(path):
+        return judge
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            entry = json.loads(line)
+            topic_id = entry["id"]
+            chunk_id = entry["docid"]
+            mean_rating = float(np.mean(entry["rating"])) / 5.0
+            judge.setdefault(topic_id, {})[chunk_id] = mean_rating
+    return judge
 
 # ─── Embedding & Scoring ────────────────────────────────────────────────
 
@@ -155,13 +187,14 @@ def process_topic(model, sampler, topic_id, query_text, candidates, alpha, cache
 # ─── Alpha Sweep ──────────────────────────────────────────────────────────
 
 
-def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache):
+def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, judge_scores=None):
     results = []
 
     for alpha in ALPHA_GRID:
         total_chunks = 0
         n_topics = 0
         mmr_scores = []
+        mmr_raw_scores = []
 
         with open(RUN_FILE_PATH, "w", encoding="utf-8") as run_file:
             for _, row in data.head(N_ITERATIONS).iterrows():
@@ -182,6 +215,10 @@ def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache):
                 n_topics += 1
                 score = accumuate_MMR(query_embds, cand_embs)
                 mmr_scores.append(score)
+                if judge_scores:
+                    topic_judge = judge_scores.get(topic_id, {})
+                    score_raw = accumuate_MMR_raw_rel(topic_judge, selected, cand_embs)
+                    mmr_raw_scores.append(score_raw)
                 write_run_entries(selected, run_file, topic_id)
 
         print(f"\nFinished processing. Results saved to {RUN_FILE_PATH}")
@@ -190,7 +227,11 @@ def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache):
 
         metrics = run_crux_eval(RUN_FILE_PATH, QREL_PATH, JUDGE_PATH)
         mean_mmr = float(np.mean(mmr_scores)) if mmr_scores else 0.0
-        results.append({"alpha": alpha, "mean_chunks": total_chunks / n_topics, "MMR": mean_mmr, **metrics})
+        result = {"alpha": alpha, "mean_chunks": total_chunks / n_topics, "MMR": mean_mmr}
+        if mmr_raw_scores:
+            result["MMR_raw"] = float(np.mean(mmr_raw_scores))
+        result.update(metrics)
+        results.append(result)
         print("iterations:", N_ITERATIONS)
 
     return save_results(results, "alpha_sweep_results.csv")
@@ -206,7 +247,7 @@ def evaluate_MMR(query_emp, selected_chunks_emp):
     redun = 0
     for i in range(len(selected_chunks_emp) - 1):
         redun = max(redun, recent_selected_chunk_emp @ selected_chunks_emp[i])
-    score = 0.5 * rel - 0.5 * redun
+    score = MMR_LAMBDA * rel - MMR_LAMBDA * redun
     return score
 
 def accumuate_MMR(query_emp, selected_chunks_emp):
@@ -215,6 +256,29 @@ def accumuate_MMR(query_emp, selected_chunks_emp):
         score = score+ evaluate_MMR(query_emp, selected_chunks_emp[:i+1])
         print(f"MMR score after selecting {i+1} chunks: {score:.4f}")
     print(f"Total Cumulative MMR Metric: {score:.4f}")
+    return score
+
+
+def evaluate_MMR_raw_rel(judge_scores, chunk_id, selected_chunks_emp):
+    if not selected_chunks_emp:
+        return 0.0
+    rel = judge_scores.get(chunk_id, 0.0)
+    current_emb = selected_chunks_emp[-1]
+    redun = 0
+    for i in range(len(selected_chunks_emp) - 1):
+        redun = max(redun, current_emb @ selected_chunks_emp[i])
+    score = MMR_LAMBDA * rel - MMR_LAMBDA * redun
+    return score
+
+
+def accumuate_MMR_raw_rel(judge_scores, selected, selected_chunks_emp):
+    score = 0
+    for i in range(len(selected)):
+        chunk_id = selected[i][0]
+        step = evaluate_MMR_raw_rel(judge_scores, chunk_id, selected_chunks_emp[:i+1])
+        score += step
+        print(f"MMR_raw score after selecting {i+1} chunks: {score:.4f}")
+    print(f"Total Cumulative MMR_raw Metric: {score:.4f}")
     return score
 
 # ─── Main ─────────────────────────────────────────────────────────────────
@@ -228,14 +292,20 @@ if __name__ == "__main__":
     print("Pre-loading corpus into memory...")
     corpus_by_topic = load_corpus(CORPUS_PATH)
     cache = load_or_create_cache(CACHE_FILE_PATH)
+    graded_qrels = load_graded_qrels(GRADED_QREL_PATH)
+    judge_scores = load_judge_v2(JUDGE_V2_PATH)
+    print(f"Loaded graded relevance for {len(graded_qrels)} topics")
+    print(f"Loaded judge v2 ratings for {len(judge_scores)} topics")
 
     print("Loading SentenceTransformer model...")
     model = SentenceTransformer("all-MiniLM-L6-v2", device="cuda")
     sampler = oj.SASampler()
 
     print(f"Processing {len(data)} topics...")
-    df = run_alpha_sweep(data, corpus_by_topic, model, sampler, cache)
+    df = run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, judge_scores)
 
     plot_all_metrics(df, save_path="alpha_all_metrics.png")
     plot_chunk_count(df, k_target=K_FINAL, save_path="alpha_vs_chunk_count.png")
     plot_mmr_vs_alpha(df, save_path="alpha_vs_mmr.png")
+    if "MMR_raw" in df.columns:
+        plot_mmr_comparison(df, save_path="alpha_mmr_comparison.png")
