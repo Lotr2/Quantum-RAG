@@ -149,6 +149,30 @@ def plot_chunk_count(df: pd.DataFrame, k_target: float | None = None, save_path:
     return fig
  
  
+def plot_mmr_vs_alpha(df: pd.DataFrame, save_path: str | None = None):
+    """
+    Plot cumulative MMR score (y) against alpha (x), marking the best alpha.
+    Expects a column named 'MMR' in the DataFrame.
+    """
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(df["alpha"], df["MMR"], marker="o", color="#7c3aed")
+
+    best_idx = df["MMR"].idxmax()
+    best_alpha, best_val = df.loc[best_idx, "alpha"], df.loc[best_idx, "MMR"]
+    ax.scatter([best_alpha], [best_val], color="#dc2626", zorder=5,
+               label=f"best: α={best_alpha:.2f}, MMR={best_val:.4f}")
+
+    ax.set_xlabel("alpha")
+    ax.set_ylabel("Cumulative MMR")
+    ax.set_title("alpha vs MMR")
+    ax.grid(alpha=0.3)
+    ax.legend()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
 if __name__ == "__main__":
     # Self-test with synthetic data mimicking your CRUX stdout format
     import numpy as np

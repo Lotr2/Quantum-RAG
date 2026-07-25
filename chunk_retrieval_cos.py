@@ -7,7 +7,7 @@ import openjij as oj
 import subprocess
 import pandas as pd
 from sentence_transformers import SentenceTransformer
-from utils import parse_crux_output, save_results, plot_all_metrics, plot_chunk_count
+from utils import parse_crux_output, save_results, plot_all_metrics, plot_chunk_count, plot_mmr_vs_alpha
 
 # ─── Configuration ───────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ CACHE_FILE_PATH = "score_cache.pkl"
 
 K_FINAL = 5
 N_SA_READS = 100
-N_ITERATIONS = 50
+N_ITERATIONS = 1
 ALPHA_GRID = [round(a, 2) for a in np.linspace(0.75, 1, 10)]
 
 # ─── Data Loading ────────────────────────────────────────────────────────
@@ -147,9 +147,10 @@ def process_topic(model, sampler, topic_id, query_text, candidates, alpha, cache
     best = sample_qubo(sampler, qubo_dict)
 
     selected = extract_selected(best, cand_ids, raw_rel)
+    selected_emb = [cand_embs[cand_ids.index(cid)] for cid, _ in selected]
     print(f"Topic {topic_id}: Selected {len(selected)} chunks from {n} (Target: {K_FINAL})")
 
-    return selected, cache_updated
+    return selected, cache_updated, selected_emb, query_emb
 
 # ─── Alpha Sweep ──────────────────────────────────────────────────────────
 
@@ -160,6 +161,7 @@ def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache):
     for alpha in ALPHA_GRID:
         total_chunks = 0
         n_topics = 0
+        mmr_scores = []
 
         with open(RUN_FILE_PATH, "w", encoding="utf-8") as run_file:
             for _, row in data.head(N_ITERATIONS).iterrows():
@@ -170,14 +172,16 @@ def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache):
                 if not candidates:
                     continue
 
-                selected, cache_updated = process_topic(
+                selected, cache_updated, cand_embs, query_embds = process_topic(
                     model, sampler, topic_id, query_text, candidates, alpha, cache
                 )
+                print(selected)
                 if cache_updated:
                     save_cache(cache, CACHE_FILE_PATH)
-
                 total_chunks += len(selected)
                 n_topics += 1
+                score = accumuate_MMR(query_embds, cand_embs)
+                mmr_scores.append(score)
                 write_run_entries(selected, run_file, topic_id)
 
         print(f"\nFinished processing. Results saved to {RUN_FILE_PATH}")
@@ -185,10 +189,33 @@ def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache):
         print(f"average selected chunks: {total_chunks / n_topics:.1f}")
 
         metrics = run_crux_eval(RUN_FILE_PATH, QREL_PATH, JUDGE_PATH)
-        results.append({"alpha": alpha, "mean_chunks": total_chunks / n_topics, **metrics})
+        mean_mmr = float(np.mean(mmr_scores)) if mmr_scores else 0.0
+        results.append({"alpha": alpha, "mean_chunks": total_chunks / n_topics, "MMR": mean_mmr, **metrics})
         print("iterations:", N_ITERATIONS)
 
     return save_results(results, "alpha_sweep_results.csv")
+
+
+
+# ─── MMR Evaluation Metric ─────────────────────────────────────────────────────────────────
+def evaluate_MMR(query_emp, selected_chunks_emp):
+    if(selected_chunks_emp == []):
+        return 0.0
+    recent_selected_chunk_emp = selected_chunks_emp[-1]
+    rel = query_emp @ recent_selected_chunk_emp
+    redun = 0
+    for i in range(len(selected_chunks_emp) - 1):
+        redun = max(redun, recent_selected_chunk_emp @ selected_chunks_emp[i])
+    score = 0.5 * rel - 0.5 * redun
+    return score
+
+def accumuate_MMR(query_emp, selected_chunks_emp):
+    score =0
+    for i in range(len(selected_chunks_emp)):
+        score = score+ evaluate_MMR(query_emp, selected_chunks_emp[:i+1])
+        print(f"MMR score after selecting {i+1} chunks: {score:.4f}")
+    print(f"Total Cumulative MMR Metric: {score:.4f}")
+    return score
 
 # ─── Main ─────────────────────────────────────────────────────────────────
 
@@ -211,3 +238,4 @@ if __name__ == "__main__":
 
     plot_all_metrics(df, save_path="alpha_all_metrics.png")
     plot_chunk_count(df, k_target=K_FINAL, save_path="alpha_vs_chunk_count.png")
+    plot_mmr_vs_alpha(df, save_path="alpha_vs_mmr.png")
