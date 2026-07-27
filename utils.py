@@ -100,7 +100,8 @@ def plot_all_metrics(df: pd.DataFrame, metrics: list[str] | None = None, save_pa
     """
     if metrics is None:
         metrics = [m for m in
-                   [metric_name("P"), metric_name("nDCG"), metric_name("alpha_nDCG"), metric_name("Cov")]
+                   [metric_name("P"), metric_name("nDCG"), metric_name("alpha_nDCG"), metric_name("Cov"),
+                    "SNU", "ICE"]
                    if m in df.columns]
  
     n = len(metrics)
@@ -186,12 +187,101 @@ def plot_mmr_comparison(df: pd.DataFrame, save_path: str | None = None):
     best_raw_idx = df["MMR_raw"].idxmax()
     ax.scatter([df.loc[best_mmr_idx, "alpha"]], [df.loc[best_mmr_idx, "MMR"]],
                color="#7c3aed", edgecolors="black", zorder=5, s=80)
-    ax.scatter([df.loc[best_raw_idx, "alpha"]], [df.loc[best_raw_idx, "MMR_raw"]],
-               color="#ea580c", edgecolors="black", zorder=5, s=80)
+    # ax.scatter([df.loc[best_raw_idx, "alpha"]], [df.loc[best_raw_idx, "MMR_raw"]],
+    #            color="#ea580c", edgecolors="black", zorder=5, s=80)
 
     ax.set_xlabel("alpha")
     ax.set_ylabel("Cumulative MMR Score")
-    ax.set_title("MMR vs MMR_raw across alpha")
+    # ax.set_title("MMR vs MMR_raw across alpha")
+    ax.set_title("MMR scores")
+
+    ax.grid(alpha=0.3)
+    ax.legend()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_redundancy_metrics(df: pd.DataFrame, save_path: str | None = None):
+    """
+    Grid of alpha vs SNU, ICE, and Coverage — the three sub-question
+    redundancy / coverage metrics.
+    """
+    available = [m for m in ["SNU", "ICE", "Coverage"] if m in df.columns]
+    if not available:
+        print("No redundancy metrics (SNU, ICE, Coverage) found in DataFrame columns.")
+        return None
+
+    n = len(available)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4))
+    axes = axes if n > 1 else [axes]
+
+    colors = {"SNU": "#7c3aed", "ICE": "#ea580c", "Coverage": "#059669"}
+    for ax, metric in zip(axes, available):
+        ax.plot(df["alpha"], df[metric], marker="o", color=colors.get(metric, "#2563eb"))
+        best_idx = df[metric].idxmax()
+        ax.scatter([df.loc[best_idx, "alpha"]], [df.loc[best_idx, metric]],
+                   color="#dc2626", zorder=5,
+                   label=f"best: alpha={df.loc[best_idx, 'alpha']:.2f}")
+        ax.set_xlabel("alpha")
+        ax.set_ylabel(metric)
+        ax.set_title(metric)
+        ax.grid(alpha=0.3)
+        ax.legend()
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_snu_vs_alpha(df: pd.DataFrame, save_path: str | None = None):
+    """
+    Plot alpha (x) against Sub-question Net Utility (y), marking the best alpha.
+    """
+    if "SNU" not in df.columns:
+        print("SNU column not found in DataFrame — skipping plot_snu_vs_alpha.")
+        return None
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(df["alpha"], df["SNU"], marker="o", color="#7c3aed")
+
+    best_idx = df["SNU"].idxmax()
+    best_alpha, best_val = df.loc[best_idx, "alpha"], df.loc[best_idx, "SNU"]
+    ax.scatter([best_alpha], [best_val], color="#dc2626", zorder=5,
+               label=f"best: alpha={best_alpha:.2f}, SNU={best_val:.4f}")
+
+    ax.set_xlabel("alpha")
+    ax.set_ylabel("SNU")
+    ax.set_title("alpha vs Sub-question Net Utility")
+    ax.grid(alpha=0.3)
+    ax.legend()
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_ice_vs_alpha(df: pd.DataFrame, save_path: str | None = None):
+    """
+    Plot alpha (x) against Incremental Coverage Efficiency (y), marking the best alpha.
+    """
+    if "ICE" not in df.columns:
+        print("ICE column not found in DataFrame — skipping plot_ice_vs_alpha.")
+        return None
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    ax.plot(df["alpha"], df["ICE"], marker="o", color="#ea580c")
+
+    best_idx = df["ICE"].idxmax()
+    best_alpha, best_val = df.loc[best_idx, "alpha"], df.loc[best_idx, "ICE"]
+    ax.scatter([best_alpha], [best_val], color="#dc2626", zorder=5,
+               label=f"best: alpha={best_alpha:.2f}, ICE={best_val:.4f}")
+
+    ax.set_xlabel("alpha")
+    ax.set_ylabel("ICE")
+    ax.set_title("alpha vs Incremental Coverage Efficiency")
     ax.grid(alpha=0.3)
     ax.legend()
 
@@ -223,6 +313,9 @@ if __name__ == "__main__":
             ndcg: 0.4 + 0.15 * a + rng.normal(0, 0.02),
             andcg: 0.5 - 0.6 * (a - 0.55) ** 2 + rng.normal(0, 0.01),
             cov: 0.6 - 0.3 * a + rng.normal(0, 0.02),
+            "SNU": 0.3 + 0.25 * a - 0.3 * (a - 0.6) ** 2 + rng.normal(0, 0.015),
+            "ICE": 0.5 + 0.15 * a - 0.4 * (a - 0.5) ** 2 + rng.normal(0, 0.01),
+            "Coverage": 0.7 - 0.1 * a + rng.normal(0, 0.02),
         })
  
     df = save_results(results, "/tmp/demo_alpha_sweep_results.csv")
@@ -231,4 +324,7 @@ if __name__ == "__main__":
     plot_metric(df, andcg, save_path="/tmp/demo_alpha_vs_alpha_ndcg.png")
     plot_all_metrics(df, save_path="/tmp/demo_alpha_all_metrics.png")
     plot_chunk_count(df, k_target=5, save_path="/tmp/demo_alpha_vs_chunk_count.png")
+    plot_redundancy_metrics(df, save_path="/tmp/demo_redundancy_metrics.png")
+    plot_snu_vs_alpha(df, save_path="/tmp/demo_alpha_vs_snu.png")
+    plot_ice_vs_alpha(df, save_path="/tmp/demo_alpha_vs_ice.png")
     print("All plots generated successfully.")
