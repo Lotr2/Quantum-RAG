@@ -1,4 +1,5 @@
 import re
+import json
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
@@ -320,6 +321,150 @@ def plot_ice_vs_alpha(df: pd.DataFrame, k_target: float | None = None, save_path
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     return fig
 
+
+# ─── CDF Plotting Functions ────────────────────────────────────────────────
+
+def _parse_values_col(df: pd.DataFrame, col: str) -> list[list[float]]:
+    """Extract per-topic lists from a JSON-string column in the DataFrame."""
+    return [json.loads(v) for v in df[col]]
+
+
+def _plot_cdf_curve(ax: plt.Axes, values: list[float], label: str, color: str):
+    """Plot a single CDF curve on the given axes."""
+    sorted_vals = np.sort(values)
+    cdf = np.arange(1, len(sorted_vals) + 1) / len(sorted_vals)
+    ax.plot(sorted_vals, cdf, label=label, color=color, linewidth=1.5)
+
+
+def plot_mmr_cdf(df: pd.DataFrame, save_path: str | None = None):
+    """
+    CDF of per-topic MMR scores, one curve per alpha value.
+    X-axis: MMR score, Y-axis: cumulative probability.
+    """
+    if "MMR_values" not in df.columns:
+        print("MMR_values column not found — skipping plot_mmr_cdf.")
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    cmap = plt.cm.viridis
+    alphas = df["alpha"].values
+
+    for i, (_, row) in enumerate(df.iterrows()):
+        vals = json.loads(row["MMR_values"])
+        color = cmap(i / max(len(alphas) - 1, 1))
+        _plot_cdf_curve(ax, vals, label=f"α={row['alpha']:.2f}", color=color)
+
+    ax.set_xlabel("MMR Score")
+    ax.set_ylabel("Cumulative Probability")
+    ax.set_title("CDF of Per-Topic MMR Scores Across Alpha")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=7, loc="lower right")
+    ax.set_ylim(0, 1.05)
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_snu_cdf(df: pd.DataFrame, save_path: str | None = None):
+    """
+    CDF of per-topic SNU scores, one curve per alpha value.
+    X-axis: SNU score, Y-axis: cumulative probability.
+    """
+    if "SNU_values" not in df.columns:
+        print("SNU_values column not found — skipping plot_snu_cdf.")
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    cmap = plt.get_cmap('tab10')
+    alphas = df["alpha"].values
+
+    for i, (_, row) in enumerate(df.iterrows()):
+        vals = json.loads(row["SNU_values"])
+        color = cmap(i % cmap.N)
+        if(row['alpha'] > 0.5 and row['alpha'] < 0.9):
+            _plot_cdf_curve(ax, vals, label=f"α={row['alpha']:.2f}", color=color)
+
+    ax.set_xlabel("SNU Score")
+    ax.set_ylabel("Cumulative Probability")
+    ax.set_title("CDF of Per-Topic SNU Scores Across Alpha")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=7, loc="lower right")
+    ax.set_ylim(0, 1.05)
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_ice_cdf(df: pd.DataFrame, save_path: str | None = None):
+    """
+    CDF of per-topic ICE scores, one curve per alpha value.
+    X-axis: ICE score, Y-axis: cumulative probability.
+    """
+    if "ICE_values" not in df.columns:
+        print("ICE_values column not found — skipping plot_ice_cdf.")
+        return None
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    cmap = plt.cm.viridis
+    alphas = df["alpha"].values
+
+    for i, (_, row) in enumerate(df.iterrows()):
+        vals = json.loads(row["ICE_values"])
+        color = cmap(i / max(len(alphas) - 1, 1))
+        _plot_cdf_curve(ax, vals, label=f"α={row['alpha']:.2f}", color=color)
+
+    ax.set_xlabel("ICE Score")
+    ax.set_ylabel("Cumulative Probability")
+    ax.set_title("CDF of Per-Topic ICE Scores Across Alpha")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=7, loc="lower right")
+    ax.set_ylim(0, 1.05)
+
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
+def plot_redundancy_cdf(df: pd.DataFrame, save_path: str | None = None):
+    """
+    Grid of CDF plots for SNU, ICE, and Coverage — one curve per alpha value.
+    """
+    value_cols = {
+        "SNU": "SNU_values",
+        "ICE": "ICE_values",
+        "Coverage": "Coverage_values",
+    }
+    available = {m: c for m, c in value_cols.items() if c in df.columns}
+    if not available:
+        print("No redundancy metric *_values columns found — skipping plot_redundancy_cdf.")
+        return None
+
+    n = len(available)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4))
+    axes = axes if n > 1 else [axes]
+
+    cmap = plt.cm.viridis
+    colors_map = {"SNU": "#7c3aed", "ICE": "#ea580c", "Coverage": "#059669"}
+
+    for ax, (metric, col) in zip(axes, available.items()):
+        for i, (_, row) in enumerate(df.iterrows()):
+            vals = json.loads(row[col])
+            color = cmap(i / max(len(df) - 1, 1))
+            _plot_cdf_curve(ax, vals, label=f"α={row['alpha']:.2f}", color=color)
+        ax.set_xlabel(metric)
+        ax.set_ylabel("Cumulative Probability")
+        ax.set_title(f"CDF of {metric}")
+        ax.grid(alpha=0.3)
+        ax.legend(fontsize=7, loc="lower right")
+        ax.set_ylim(0, 1.05)
+
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
 if __name__ == "__main__":
     result_path = "result.csv"
     df = pd.read_csv(result_path)
@@ -336,4 +481,11 @@ if __name__ == "__main__":
     plot_ice_vs_alpha(df, save_path="results/alpha_vs_ice.png")
     # if "MMR_raw" in df.columns:
     #     plot_mmr_comparison(df, save_path="mmr_comparison.png")
+
+    # CDF plots
+    plot_mmr_cdf(df, save_path="results/cdf_mmr.png")
+    plot_snu_cdf(df, save_path="results/cdf_snu.png")
+    plot_ice_cdf(df, save_path="results/cdf_ice.png")
+    plot_redundancy_cdf(df, save_path="results/cdf_redundancy.png")
+
     print("All plots generated successfully.")

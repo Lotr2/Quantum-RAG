@@ -45,7 +45,7 @@ MAX_REL_GRADE = 3
 
 K_FINAL = 5
 N_SA_READS = 100
-N_ITERATIONS = 20
+N_ITERATIONS = 50
 # ALPHA_GRID = [round(a, 3) for a in np.linspace(0.6, 0.9, 20)]
 # # ALPHA_GRID = [0.7,0.725,0.75,0.775,0.8,0.825,0.85,0.875,0.9]
 ALPHA_GRID = [0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]
@@ -299,12 +299,17 @@ def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, snu_lambda, ju
         crux_metrics = run_crux_eval(RUN_FILE_PATH, QREL_PATH, JUDGE_PATH)
         mean_mmr = float(np.mean(mmr_scores)) if mmr_scores else 0.0
         result = {"alpha": alpha, "mean_chunks": total_chunks / n_topics, "MMR": mean_mmr}
+        if mmr_scores:
+            result["MMR_values"] = json.dumps(mmr_scores)
         if mmr_raw_scores:
             result["MMR_raw"] = float(np.mean(mmr_raw_scores))
         if all_snu:
             result["SNU"] = float(np.mean(all_snu))
             result["ICE"] = float(np.mean(all_ice))
             result["Coverage"] = float(np.mean(all_coverage))
+            result["SNU_values"] = json.dumps(all_snu)
+            result["ICE_values"] = json.dumps(all_ice)
+            result["Coverage_values"] = json.dumps(all_coverage)
         result.update(crux_metrics)
         results.append(result)
 
@@ -447,7 +452,7 @@ if __name__ == "__main__":
 
     print("Loading SentenceTransformer model...")
     model = SentenceTransformer("all-MiniLM-L6-v2", device="cuda")
-    sampler = oj.SASampler()
+    sampler = oj.SQASampler()
 
     print(f"Processing {len(data)} topics...")
     df = run_alpha_sweep(data, corpus_by_topic, model, sampler, cache,snu_lambda, judge_scores,
