@@ -1,3 +1,7 @@
+#the problem now is that MMR basically checks if the top 5 candidates are in the solution or not
+#but this is stupid because our dataset is small and that means that the top 5 candidates are probably all in the solution anyway.
+#we cannot really use it to evaluate the best value for alpha because it would alway make the highest value the best
+
 import os
 import sys
 import json
@@ -8,8 +12,7 @@ import openjij as oj
 import subprocess
 import pandas as pd
 from sentence_transformers import SentenceTransformer
-from utils import parse_crux_output, save_results, plot_all_metrics, plot_chunk_count, plot_mmr_vs_alpha, plot_mmr_comparison, plot_ice_vs_alpha, plot_snu_vs_alpha
-
+from utils import parse_crux_output, save_results
 # ─── Configuration ───────────────────────────────────────────────────────
 
 CRUX_ROOT = r"D:\lunacy\Em#loyed\Quantum\Code\Version 2.0\crux_datasets\crux"
@@ -32,6 +35,7 @@ _spec.loader.exec_module(_mod)
 compute_redundancy_metrics = _mod.compute_redundancy_metrics
 
 RUN_FILE_PATH = "qubo_duc04_run.txt"
+LOG_FILE_PATH = "qubo_duc04_log.txt"
 QREL_PATH = os.path.join(CRUX_ROOT, "crux-mds-duc04", "qrels", "div_qrels-tau3.txt")
 JUDGE_PATH = os.path.join(CRUX_ROOT, "crux-mds-duc04", "judge", "ratings.Llama-3.1-70B-Instruct.0-1.jsonl")
 CACHE_FILE_PATH = "score_cache.pkl"
@@ -41,12 +45,14 @@ MAX_REL_GRADE = 3
 
 K_FINAL = 5
 N_SA_READS = 100
-N_ITERATIONS = 1
+N_ITERATIONS = 20
 # ALPHA_GRID = [round(a, 3) for a in np.linspace(0.6, 0.9, 20)]
 # # ALPHA_GRID = [0.7,0.725,0.75,0.775,0.8,0.825,0.85,0.875,0.9]
-# ALPHA_GRID = [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9]
-ALPHA_GRID = [0.5]
+ALPHA_GRID = [0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]
+# ALPHA_GRID = [0.5]
 MMR_LAMBDA = 0.5
+MMR_K = 5
+snu_lambda= 1
 
 # ─── Data Loading ────────────────────────────────────────────────────────
 
@@ -146,17 +152,18 @@ def sample_qubo(sampler, qubo_dict):
 
 
 def extract_selected(best_sample, cand_ids, raw_rel_scores):
-    print("cand_ids: ",cand_ids)
+    # print("cand_ids: ",cand_ids)
     selected = [
         (cand_ids[node], float(raw_rel_scores[node]))
         for node, val in best_sample.items() if val == 1
     ]
-    # selected.sort(key=lambda x: x[1], reverse=True)
-    #this line apparently sorts b
+    selected.sort(key=lambda x: x[1], reverse=True)
+    
     return selected
 
 
-def write_run_entries(selected, run_file, topic_id):
+def write_run_entries(selected, run_file, topic_id, alpha, total_candidates, log_file):
+    log_file.write(f"alpha: {alpha} | chunks selected: {len(selected)} | total candidates: {total_candidates}\n")
     for rank, (cid, score) in enumerate(selected, 1):
         run_file.write(f"{topic_id} Q0 {cid} {rank} {score:.4f} QUBO_Annealer\n")
 
@@ -212,27 +219,27 @@ def process_topic(model, sampler, topic_id, query_text, candidates, alpha, cache
     cand_embs, cache_updated = encode_candidates(model, cand_texts, topic_id, cache)
     query_emb = model.encode([query_text], normalize_embeddings=True).astype(np.float32)[0]
 
-    print("printing embs structure",cand_embs)
-    print("cand_embs len: ", len(cand_embs))
-    print("cand len: ", len(candidates))
+    # print("printing embs structure",cand_embs)
+    # print("cand_embs len: ", len(cand_embs))
+    # print("cand len: ", len(candidates))
 
     raw_rel, norm_rel = compute_relevance(cand_embs, query_emb)
     raw_redun, norm_redun, pair_indices = compute_redundancy(cand_embs, n)
 
     qubo_dict = build_qubo_dict(n, alpha, norm_rel, norm_redun, pair_indices)
     best = sample_qubo(sampler, qubo_dict)
-    print("best sample from QUBO:", best)
+    # print("best sample from QUBO:", best)
     selected = extract_selected(best, cand_ids, raw_rel)
     selected_emb = [cand_embs[cand_ids.index(cid)] for cid, _ in selected]
     # print(f"Topic {topic_id}: Selected {len(selected)} chunks from {n} (Target: {K_FINAL})")
 
-    return selected, cache_updated, selected_emb, query_emb
+    return selected, cache_updated, selected_emb, cand_ids, cand_embs, query_emb
 
 # ─── Alpha Sweep ──────────────────────────────────────────────────────────
 
 
-def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, judge_scores=None,
-                    raw_ratings=None, subquestions=None, snu_tau=3, snu_lambda=0.5):
+def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, snu_lambda, judge_scores=None,
+                    raw_ratings=None, subquestions=None, snu_tau=3 ):
     results = []
 
     for alpha in ALPHA_GRID:
@@ -244,7 +251,8 @@ def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, judge_scores=N
         all_ice = []
         all_coverage = []
 
-        with open(RUN_FILE_PATH, "w", encoding="utf-8") as run_file:
+        with open(RUN_FILE_PATH, "a", encoding="utf-8") as run_file, \
+             open(LOG_FILE_PATH, "a", encoding="utf-8") as log_file:
             for _, row in data.head(N_ITERATIONS).iterrows():
                 topic_id = str(row["id"]) if "id" in row else str(_)
                 query_text = row["topic"]
@@ -253,21 +261,26 @@ def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, judge_scores=N
                 if not candidates:
                     continue
 
-                selected, cache_updated, selected_embs, query_embds = process_topic(
+                selected, cache_updated, selected_embs, cand_ids, cands_emb, query_emb = process_topic(
                     model, sampler, topic_id, query_text, candidates, alpha, cache
                 )
-                print(selected)
+                # print(selected)
                 if cache_updated:
                     save_cache(cache, CACHE_FILE_PATH)
-                total_chunks += len(selected)
+                number_of_candidates = len(candidates)
+                number_of_selected_chuncks = len(selected)
+                total_chunks += number_of_selected_chuncks
                 n_topics += 1
-                score = accumuate_MMR(query_embds, selected_embs)
+
+                score = evaluate_MMR_metric(cand_ids, cands_emb, query_emb, selected, MMR_K=MMR_K)
                 mmr_scores.append(score)
-                if judge_scores:
-                    topic_judge = judge_scores.get(topic_id, {})
-                    score_raw = accumuate_MMR_raw_rel(topic_judge, selected, selected_embs)
-                    mmr_raw_scores.append(score_raw)
-                # write_run_entries(selected, run_file, topic_id)
+                # print(mmr_scores)
+                
+                # if judge_scores:
+                #     topic_judge = judge_scores.get(topic_id, {})
+                #     score_raw = accumuate_MMR_raw_rel(topic_judge, selected, selected_embs)
+                #     mmr_raw_scores.append(score_raw)
+                write_run_entries(selected, run_file, topic_id, alpha, number_of_candidates, log_file)
 
                 if raw_ratings is not None and subquestions is not None:
                     topic_ratings = raw_ratings.get(topic_id, {})
@@ -277,6 +290,7 @@ def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, judge_scores=N
                     all_snu.append(metrics.snu)
                     all_ice.append(metrics.ice)
                     all_coverage.append(metrics.coverage)
+                # print(f"selected {number_of_selected_chuncks} chunks for topic {topic_id} with alpha {alpha:.3f} from {number_of_candidates}")
 
         print(f"\nFinished processing. Results saved to {RUN_FILE_PATH}")
         print(f"alpha: {alpha}")
@@ -293,9 +307,8 @@ def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, judge_scores=N
             result["Coverage"] = float(np.mean(all_coverage))
         result.update(crux_metrics)
         results.append(result)
-        print("iterations:", N_ITERATIONS)
 
-    return save_results(results, "alpha_sweep_results.csv")
+    return save_results(results, "result.csv")
 
 
 
@@ -311,32 +324,31 @@ def evaluate_MMR(query_emp, selected_chunks_emp):
     score = MMR_LAMBDA * rel - (1-MMR_LAMBDA) * redun
     return score
 
-def accumuate_MMR(query_emp, selected_chunks_emp):
-    score =0
-    for i in range(len(selected_chunks_emp)):
-        score = score+ evaluate_MMR(query_emp, selected_chunks_emp[:i+1])
-        print(f"MMR score after selecting {i+1} chunks: {score:.4f}")
-    print(f"Total Cumulative MMR Metric: {score:.4f}")
-    return score
-
+# --- -- -- - - -- - -Find MMR Solution ---- -- - - -- - -
 def find_MMR_Solution(cands_emb, query_emp, k=10):
-    selected={}
-    for _ in range(k):
+    selected = []
+    for _ in range(min(k, len(cands_emb))):
+        best_score = float('-inf')
+        best_index = -1
         for i in range(len(cands_emb)):
             if i in selected:
                 continue
             score = evaluate_MMR(query_emp, [cands_emb[j] for j in selected] + [cands_emb[i]])
             if score > best_score:
                 best_score = score
-                best_index = i  
+                best_index = i
         selected.append(best_index)
     return selected
-def extract_MMR_solution(cands_emb, query_emp, k=10):
-    selected_indices = find_MMR_Solution(cands_emb, query_emp, k)
-    selected_chunks = [cands_emb[i] for i in selected_indices]
-    return selected_chunks
 
+def evaluate_MMR_metric(cand_ids, cands_emb, query_emb, our_sol, MMR_K=10):
+    mmr_indices = find_MMR_Solution(cands_emb, query_emb, k=MMR_K)
+    mmr_chunk_ids = set(cand_ids[i] for i in mmr_indices)
+    our_chunk_ids = set(cid for cid, _ in our_sol)
+    intersection_count = len(mmr_chunk_ids & our_chunk_ids)
+    return intersection_count / MMR_K
 
+#how should we evaluate based on the MMR? maybe let k=5 and see how many of the top 5
+#appear? hold on maybe we should try it for different values for k.
 
 def evaluate_MMR_raw_rel(judge_scores, chunk_id, selected_chunks_emp):
     if not selected_chunks_emp:
@@ -356,8 +368,8 @@ def accumuate_MMR_raw_rel(judge_scores, selected, selected_chunks_emp):
         chunk_id = selected[i][0]
         step = evaluate_MMR_raw_rel(judge_scores, chunk_id, selected_chunks_emp[:i+1])
         score += step
-        print(f"MMR_raw score after selecting {i+1} chunks: {score:.4f}")
-    print(f"Total Cumulative MMR_raw Metric: {score:.4f}")
+    #     print(f"MMR_raw score after selecting {i+1} chunks: {score:.4f}")
+    # print(f"Total Cumulative MMR_raw Metric: {score:.4f}")
     return score
 # 
 
@@ -410,6 +422,9 @@ if __name__ == "__main__":
     from crux.tools import load_ratings
     from crux.tools.mds.ir_utils import load_subtopics
 
+    open(RUN_FILE_PATH, "w").close()
+    open(LOG_FILE_PATH, "w").close()
+
     print("Loading CRUX DUC04 evaluation data...")
     data = load_data(subset="duc04")
 
@@ -435,16 +450,6 @@ if __name__ == "__main__":
     sampler = oj.SASampler()
 
     print(f"Processing {len(data)} topics...")
-    df = run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, judge_scores,
+    df = run_alpha_sweep(data, corpus_by_topic, model, sampler, cache,snu_lambda, judge_scores,
                          raw_ratings=raw_ratings, subquestions=subquestions)
-
-    plot_all_metrics(df, save_path="alpha_all_metrics.png")
-    plot_chunk_count(df, k_target=K_FINAL, save_path="alpha_vs_chunk_count.png")
-    plot_mmr_vs_alpha(df, save_path="alpha_vs_mmr.png")
-    plot_snu_vs_alpha(df, save_path="alpha_vs_snu.png")
-    plot_ice_vs_alpha(df, save_path="alpha_vs_ice.png")
-    if "MMR_raw" in df.columns:
-        plot_mmr_comparison(df, save_path="alpha_mmr_comparison.png")
-
-
 
