@@ -46,10 +46,7 @@ MAX_REL_GRADE = 3
 K_FINAL = 5
 N_SA_READS = 100
 N_ITERATIONS = 50
-# ALPHA_GRID = [round(a, 3) for a in np.linspace(0.6, 0.9, 20)]
-# # ALPHA_GRID = [0.7,0.725,0.75,0.775,0.8,0.825,0.85,0.875,0.9]
-ALPHA_GRID = [0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]
-# ALPHA_GRID = [0.5]
+
 MMR_LAMBDA = 0.5
 MMR_K = 5
 snu_lambda= 1
@@ -238,7 +235,7 @@ def process_topic(model, sampler, topic_id, query_text, candidates, alpha, cache
 # ─── Alpha Sweep ──────────────────────────────────────────────────────────
 
 
-def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, snu_lambda, judge_scores=None,
+def run_alpha_sweep(data, corpus_by_topic, model, sampler, cache, snu_lambda, ALPHA_GRID, judge_scores=None,
                     raw_ratings=None, subquestions=None, snu_tau=3 ):
     results = []
 
@@ -422,7 +419,24 @@ def print_random_topic(corpus_by_topic, subquestions=None, raw_ratings=None, dat
 
     print("\n" + "=" * 80)
 
+
+def simulated_vs_quantum(data, corpus_by_topic, model, cache, snu_lambda, judge_scores=None,
+                        raw_ratings= None, subquestions=None, snu_tau=3):
+    quantum_sampler = oj.SQASampler()
+    simulated_sampler = oj.SASampler()
+    print("--------------------running simulated annealer ------------------------------ ")
+    simulated_annealer_results = run_alpha_sweep(data, corpus_by_topic, model, simulated_sampler, cache, snu_lambda, [0.4], judge_scores, raw_ratings, subquestions, snu_tau)
+    print("--------------------running quantum annealer ------------------------------ ")
+    quantum_annealer_results = run_alpha_sweep(data, corpus_by_topic, model, quantum_sampler, cache, snu_lambda, [0.4], judge_scores, raw_ratings, subquestions, snu_tau)
+
+    quantum_annealer_results.to_csv("openJIJResults/quantum_annealer_results.csv", index=False)
+    simulated_annealer_results.to_csv("openJIJResults/simulated_annealer_results.csv", index=False)
+
 if __name__ == "__main__":
+    # ALPHA_GRID = [round(a, 3) for a in np.linspace(0.6, 0.9, 20)]
+    # # ALPHA_GRID = [0.7,0.725,0.75,0.775,0.8,0.825,0.85,0.875,0.9]
+    ALPHA_GRID = [0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.0]
+    # ALPHA_GRID = [0.5]
     from crux.tools.mds.ir_utils import load_data
     from crux.tools import load_ratings
     from crux.tools.mds.ir_utils import load_subtopics
@@ -455,6 +469,8 @@ if __name__ == "__main__":
     sampler = oj.SQASampler()
 
     print(f"Processing {len(data)} topics...")
-    df = run_alpha_sweep(data, corpus_by_topic, model, sampler, cache,snu_lambda, judge_scores,
-                         raw_ratings=raw_ratings, subquestions=subquestions)
+    # df = run_alpha_sweep(data, corpus_by_topic, model, sampler, cache,snu_lambda, ALPHA_GRID, judge_scores,
+    #                      raw_ratings=raw_ratings, subquestions=subquestions)
 
+    simulated_vs_quantum(data, corpus_by_topic, model, cache, snu_lambda, judge_scores,
+                         raw_ratings=raw_ratings, subquestions=subquestions)

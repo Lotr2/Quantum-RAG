@@ -465,6 +465,66 @@ def plot_redundancy_cdf(df: pd.DataFrame, save_path: str | None = None):
         fig.savefig(save_path, dpi=150, bbox_inches="tight")
     return fig
 
+
+def plot_sa_vs_sqa_cdf(df_sa: pd.DataFrame, df_sqa: pd.DataFrame,
+                        alpha: float = 0.4, save_path: str | None = None):
+    """
+    CDF comparison of Simulated Annealing vs Simulated Quantum Annealing.
+
+    Expects each DataFrame to contain one row (the given alpha) with columns
+    MMR_values, SNU_values, ICE_values, Coverage_values (JSON-encoded lists).
+    Plots all available metrics side-by-side on a 1-row grid, with SA and SQA
+    CDF curves on the same axes for direct comparison.
+    """
+    value_cols = {
+        "MMR": "MMR_values",
+        "SNU": "SNU_values",
+        "ICE": "ICE_values",
+        "Coverage": "Coverage_values",
+    }
+
+    sa_row = df_sa[df_sa["alpha"] == alpha].iloc[0] if len(df_sa) > 1 else df_sa.iloc[0]
+    sqa_row = df_sqa[df_sqa["alpha"] == alpha].iloc[0] if len(df_sqa) > 1 else df_sqa.iloc[0]
+
+    available = {m: c for m, c in value_cols.items()
+                 if c in sa_row.index and c in sqa_row.index
+                 and pd.notna(sa_row[c]) and pd.notna(sqa_row[c])}
+    if not available:
+        print("No matching *_values columns found in both DataFrames — skipping SA vs SQA CDF.")
+        return None
+
+    n = len(available)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 4))
+    axes = axes if n > 1 else [axes]
+
+    sa_color = "#2563eb"
+    sqa_color = "#dc2626"
+
+    for ax, (metric, col) in zip(axes, available.items()):
+        sa_vals = json.loads(sa_row[col])
+        sqa_vals = json.loads(sqa_row[col])
+
+        sorted_sa = np.sort(sa_vals)
+        sorted_sqa = np.sort(sqa_vals)
+        cdf_sa = np.arange(1, len(sorted_sa) + 1) / len(sorted_sa)
+        cdf_sqa = np.arange(1, len(sorted_sqa) + 1) / len(sorted_sqa)
+
+        ax.plot(sorted_sa, cdf_sa, label="SA", color=sa_color, linewidth=1.5)
+        ax.plot(sorted_sqa, cdf_sqa, label="SQA", color=sqa_color, linewidth=1.5)
+        ax.set_xlabel(metric)
+        ax.set_ylabel("Cumulative Probability")
+        ax.set_title(f"CDF of {metric}")
+        ax.grid(alpha=0.3)
+        ax.legend(loc="lower right")
+        ax.set_ylim(0, 1.05)
+
+    fig.suptitle(f"SA vs SQA  (α = {alpha})", fontsize=13, y=1.02)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, dpi=150, bbox_inches="tight")
+    return fig
+
+
 if __name__ == "__main__":
     result_path = "result.csv"
     df = pd.read_csv(result_path)
@@ -487,5 +547,10 @@ if __name__ == "__main__":
     plot_snu_cdf(df, save_path="results/cdf_snu.png")
     plot_ice_cdf(df, save_path="results/cdf_ice.png")
     plot_redundancy_cdf(df, save_path="results/cdf_redundancy.png")
+    # def plot_sa_vs_sqa_cdf(df_sa: pd.DataFrame, df_sqa: pd.DataFrame,
+                        # alpha: float = 0.4, save_path: str | None = None):
+    df_sa = pd.read_csv("openJIJResults/simulated_annealer_results.csv")
+    df_qa = pd.read_csv("openJIJResults/quantum_annealer_results.csv")
 
+    plot_sa_vs_sqa_cdf(df_sa, df_qa,save_path="results/cdf_sa_vs_sqa.png")
     print("All plots generated successfully.")
